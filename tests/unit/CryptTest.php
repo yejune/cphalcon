@@ -210,4 +210,66 @@ class CryptTest extends UnitTest
             }
         );
     }
+
+    /**
+     * Tests the Crypt::setHashAlgo
+     *
+     * @author k@yejune.com
+     * @since  2018-05-18
+     */
+    public function shouldThrowExceptionIfHashAlgoIsUnknown()
+    {
+        $this->specify(
+            'Crypt does not validate hash algorithm as expected',
+            function () {
+                $crypt = new Crypt();
+                $crypt->setHashAlgo('xxx-yyy-zzz');
+            },
+            [
+                'throws' => [
+                    Exception::class,
+                    'The hash algorithm "xxx-yyy-zzz" is not supported on this system.'
+                ]
+            ]
+        );
+    }
+
+
+    /**
+     * Tests the HMAC
+     *
+     * @author k@yejune.com
+     * @since  2018-05-18
+     */
+    public function shouldThrowExceptionIfHashDoesNotMatch()
+    {
+        $this->specify(
+            'HMAC test',
+            function () {
+                $crypt = new Crypt();
+                $crypt->setHashAlgo('sha256');
+
+                $expected = 'https://github.com/phalcon/cphalcon/issues/13379';
+
+                $key1 = 'key1';
+                $key2 = 'key2';
+                $encrypted = $crypt->encrypt($expected, $key1);
+
+                try {
+                    $actual = $crypt->decrypt($encrypted, $key2);
+                } catch (Exception $exception) {
+                    expect($exception->getMessage())->equals("Hash does not match");
+                }
+
+                $expected = '';
+                $encrypted = $crypt->encrypt($expected, $key1);
+
+                try {
+                    $actual = $crypt->decrypt($encrypted, $key2);
+                } catch (Exception $exception) {
+                    expect($exception->getMessage())->equals("Hash does not match");
+                }
+            }
+        );
+    }
 }

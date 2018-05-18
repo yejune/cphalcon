@@ -21,6 +21,7 @@ namespace Phalcon;
 
 use Phalcon\CryptInterface;
 use Phalcon\Crypt\Exception;
+use Phalcon\Crypt\Mismatch;
 
 /**
  * Phalcon\Crypt
@@ -50,6 +51,8 @@ class Crypt implements CryptInterface
 
 	protected _cipher = "aes-256-cfb";
 
+	protected _hashAlgo = "sha256";
+
 	/**
 	 * Available cipher methods.
 	 * @var array
@@ -61,6 +64,18 @@ class Crypt implements CryptInterface
 	 * @var int
 	 */
 	protected ivLength = 16;
+
+	/**
+	 * Available HMAC algorithm.
+	 * @var array
+	 */
+	protected availableHashAlgos;
+
+	/**
+	 * The hash length.
+	 * @var int
+	 */
+	protected hashLength = 32;
 
 	const PADDING_DEFAULT = 0;
 
@@ -79,10 +94,12 @@ class Crypt implements CryptInterface
 	/**
 	 * Phalcon\Crypt constructor.
 	 */
-	public function __construct(string! cipher = "aes-256-cfb")
+	public function __construct(string! cipher = "aes-256-cfb", string! hashAlgo = "sha256")
 	{
 		this->initializeAvailableCiphers();
 		this->setCipher(cipher);
+		this->initializeAvailableHashAlgos();
+		this->setHashAlgo(hashAlgo);
 	}
 
 	/**
@@ -149,6 +166,27 @@ class Crypt implements CryptInterface
 	public function getKey() -> string
 	{
 		return this->_key;
+	}
+
+	/**
+	 * Sets the hash algorithm
+	 */
+	public function setHashAlgo(string! hashAlgo) -> <Crypt>
+	{
+		this->assertHashAlgoIsAvailable(hashAlgo);
+
+		let this->hashLength = this->getHashLength(hashAlgo),
+			this->_hashAlgo  = hashAlgo;
+
+		return this;
+	}
+
+	/**
+	 * Returns the hash algorithm
+	 */
+	public function getHashAlgo() -> string
+	{
+		return this->_hashAlgo;
 	}
 
 	/**
@@ -325,7 +363,7 @@ class Crypt implements CryptInterface
 	 */
 	public function encrypt(string! text, string! key = null) -> string
 	{
-		var encryptKey, ivLength, iv, cipher, mode, blockSize, paddingType, padded;
+		var encryptKey, ivLength, iv, cipher, mode, blockSize, paddingType, padded, hashAlgo, hash, encrypted;
 
 		if key === null {
 			let encryptKey = this->_key;
@@ -358,7 +396,14 @@ class Crypt implements CryptInterface
 			let padded = text;
 		}
 
-		return iv . openssl_encrypt(padded, cipher, encryptKey, OPENSSL_RAW_DATA, iv);
+		let hashAlgo = this->_hashAlgo;
+
+		this->assertHashAlgoIsAvailable(hashAlgo);
+
+		let hash = hash_hmac(hashAlgo, padded, encryptKey, true);
+		let encrypted = openssl_encrypt(padded, cipher, encryptKey, OPENSSL_RAW_DATA, iv);
+
+		return iv . hash . encrypted;
 	}
 
 	/**
@@ -373,7 +418,7 @@ class Crypt implements CryptInterface
 	 */
 	public function decrypt(string! text, key = null) -> string
 	{
-		var decryptKey, ivLength, cipher, mode, blockSize, paddingType, decrypted;
+		var decryptKey, ivLength, cipher, mode, blockSize, paddingType, decrypted, iv, ciphertext, hashAlgo, hash, hashLength, hmac;
 
 		if key === null {
 			let decryptKey = this->_key;
@@ -397,16 +442,29 @@ class Crypt implements CryptInterface
 			let blockSize = this->getIvLength(str_ireplace("-" . mode, "", cipher));
 		}
 
-		let decrypted = openssl_decrypt(
-			substr(text, ivLength), cipher, decryptKey, OPENSSL_RAW_DATA, substr(text, 0, ivLength)
-		);
+		let hashAlgo = this->_hashAlgo;
 
+		this->assertHashAlgoIsAvailable(hashAlgo);
+
+		let hashLength = this->hashLength;
+		let iv = substr(text, 0, ivLength);
+		let hash = substr(text, ivLength, hashLength);
+		let ciphertext = substr(text, ivLength + hashLength);
+		let decrypted = openssl_decrypt(ciphertext, cipher, decryptKey, OPENSSL_RAW_DATA, iv);
 		let paddingType = this->_padding;
 
 		if mode == "cbc" || mode == "ecb" {
-			return this->_cryptUnpadText(decrypted, mode, blockSize, paddingType);
+			let decrypted = this->_cryptUnpadText(decrypted, mode, blockSize, paddingType);
 		}
 
+		let hmac = hash_hmac(hashAlgo, decrypted, decryptKey, true);
+
+		/**
+		* Compares two hashes using the same time whether they're equal or not.
+		*/
+		if hash_equals(hash, hmac) === false {
+			throw new Mismatch("Request forgery detected.");
+		}
 		return decrypted;
 	}
 
@@ -495,5 +553,62 @@ class Crypt implements CryptInterface
 		}
 
 		let this->availableCiphers = openssl_get_cipher_methods(true);
+	}
+
+	/**
+	 * Returns a list of available hash algorithms.
+	 */
+	public function getAvailableHashAlgos() -> array
+	{
+		var availableHashAlgos;
+
+		let availableHashAlgos = this->availableHashAlgos;
+		if unlikely typeof availableHashAlgos !== "array" {
+			this->initializeAvailableHashAlgos();
+			let availableHashAlgos = this->availableHashAlgos;
+		}
+
+		return availableHashAlgos;
+	}
+
+	/**
+	 * Assert a hash algorithm is available.
+	 *
+	 * @throws \Phalcon\Crypt\Exception
+	 */
+	protected function assertHashAlgoIsAvailable(string! hashAlgo) -> void
+	{
+		var availableHashAlgos;
+
+		let availableHashAlgos = this->getAvailableHashAlgos();
+
+		if !in_array(hashAlgo, availableHashAlgos) {
+			throw new Exception(
+				sprintf(
+					"The hash algorithm \"%s\" is not supported on this system.",
+					hashAlgo
+				)
+			);
+		}
+	}
+
+	/**
+	*  Initialize available hash algorithms.
+	 */
+	protected function getHashLength(string! hashAlgo) -> int
+	{
+		return strlen(hash(hashAlgo, "", true));
+	}
+
+	/**
+	 * Initialize available hash algorithms.
+	 */
+	protected function initializeAvailableHashAlgos() -> void
+	{
+		if function_exists("hash_hmac_algos") {
+			let this->availableHashAlgos = hash_hmac_algos();
+		} else {
+			let this->availableHashAlgos = hash_algos();
+		}
 	}
 }
